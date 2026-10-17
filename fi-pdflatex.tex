@@ -52,12 +52,12 @@
     university  = mu,
     faculty     = fi,
     type        = mgr,
-    department  = Department of Machine Learning and Data Processing,
+    department  = ,
     author      = Matej Korž,
-    gender      = f,
-    advisor     = {Prof. RNDr. John Smith, CSc.},
-    title       = {The Proof of P = NP},
-    TeXtitle    = {The Proof of $\mathsf{P}=\mathsf{NP}$},
+    gender      = m,
+    advisor     = {Ing. Milan Brož, Ph.D.},
+    title       = {TEMPORARY - New modes for disk encryption},
+    TeXtitle    = {TEMPORARY - New modes for disk encryption},
     keywords    = {keyword1, keyword2, ...},
     TeXkeywords = {keyword1, keyword2, \ldots},
     abstract    = {%
@@ -65,12 +65,21 @@
 
       span multiple paragraphs.
     },
+    declaration = {
+    Hereby I declare that this thesis is my original authorial work, which I have worked out on my own. All sources, references, and literature used or excerpted during elaboration of this work are properly cited and listed in complete reference to the due source.\\
+
+    \noindent During the preparation of this thesis, I used the following AI tools:\\
+       • Grammarly for grammar check,\\
+       • Claude Code to review and refactor my code,\\ 
+       • ChatGPT to improve my writing style.\\
+    I declare that I used these tools in accordance with the principles of academic integrity. I checked the content and took full responsibility for it.
+    },
     thanks      = {%
       These are the acknowledgements for my thesis, which can
 
       span multiple paragraphs.
     },
-    bib         = example.bib,
+    bib         = sources.bib,
     %% Remove the following line to use the JVS 2018 faculty logo.
     facultyLogo = fithesis-fi,
 }
@@ -128,6 +137,89 @@ Ausbildung} ist. Deshalb habe ich mich beschlossen meine eigene
 zu schreiben. Wenn alles gut geht, bekomme ich bald ein Diplom.
 Wünsch mir Glück!
 \end{otherlanguage}
+
+\chapter{Disk encryption modes}
+\label{chap:diskEncModes}
+
+Disk encryption modes define how a block cipher is applied to the data stored in the sectors of a storage device. A block cipher such as AES operates on fixed-size blocks, whereas the encrypted disk volume is many orders of magnitude larger.
+A disk encryption mode therefore has to allow a single key to protect the whole volume while satisfying several constraints specific to this use case. 
+
+The encryption must be length-preserving: a sector cannot grow, so there is no room for an IV or an authentication tag, and the ciphertext must be exactly as long as the plaintext. It must also allow random access, so that each sector can be encrypted and decrypted mostly independently of the others. Finally, the ciphertext of a sector should depend on its position on the disk, so that identical plaintext in different sectors does not yield identical ciphertext.
+
+The last requirement is met by a \emph{tweak}: a public value, typically derived from the sector number, that selects a different instance of the cipher for each sector. Early solutions used CBC mode with a sector-derived IV. A plain predictable IV is, however, vulnerable to watermarking attacks, which led to the ESSIV construction, where the IV is obtained by encrypting the sector number with a key derived from the volume key~\cite{fruhwirth_new_2005}. CBC also suffers from malleability: an attacker can flip chosen bits in a plaintext block by modifying the preceding ciphertext block. These weaknesses motivated tweakable block ciphers, which make the tweak an input of the primitive itself~\cite{liskov_tweakable_2002}.
+
+\section{XTS}
+\label{sec:xts}
+
+XTS (XEX-based tweaked-codebook mode with ciphertext stealing) is currently the dominant mode for full-disk encryption. It was approved by NIST as a mode of operation for confidentiality of data on storage devices~\cite{dworkin_recommendation_2010}. 
+In practice, \texttt{aes-xts-plain64} is the default cipher mode of \texttt{cryptsetup} on major Linux distributions~\cite{noauthor_frequentlyaskedquestions_nodate}, and Microsoft BitLocker also uses XTS-AES-128 by default, replacing its earlier AES-CBC mode~\cite{officedocspr5_bitlocker_nodate}. 
+The popularity of XTS comes largely from its performance: both the data encryption and the tweak update parallelize well and are accelerated by the AES-NI instruction set on current CPUs.
+
+XTS provides confidentiality at the level of a tweakable strong pseudorandom permutation on individual 128-bit blocks~\cite{rogaway_efficient_2004}, but it has several known limitations~\cite{martin_xts_2010, dworkin_recommendation_2010}. Its narrow-block design means that a modification of one ciphertext block changes only the corresponding 16 bytes of plaintext, so there is no diffusion across the sector, unlike in the wide-block ciphers discussed in the following sections. 
+Encryption is also deterministic for a given sector and key: an adversary comparing snapshots of the disk can see which 16-byte blocks changed and can roll a block back to an earlier value. Finally, the NIST specification limits a single data unit to $2^{20}$ blocks (16~MiB)~\cite{dworkin_recommendation_2010}. It also requires the two keys to differ.
+
+\section{Adiantum and HCTR2}
+\label{sec:adiantumNhctr2}
+
+Adiantum and HCTR2 are wide-block encryption modes developed at Google for storage encryption. Unlike XTS, they process the whole sector as a single block, so a change anywhere in the sector affects the whole ciphertext. Adiantum is aimed at processors without AES instructions. It combines NH, Poly1305, XChaCha12 and a single AES invocation, and on an ARM Cortex-A7 it decrypts 4096-byte messages over five times faster than AES-256-XTS~\cite{crowley_adiantum_2018}.
+
+HCTR2 targets the opposite case. It is derived from the HCTR mode~\cite{wang_hctr_2005}, fixes flaws in its specification and in the original security proof~\cite{crowley_length-preserving_2021, chakraborty_improved_2008}, and is efficient on processors with AES and carry-less multiplication instructions, even for short messages. Both modes are implemented in the Linux kernel~\cite{noauthor_linuxcryptohctr2c_nodate, noauthor_linuxcryptohctr2c_nodate}.
+
+Although these modes remove some weaknesses of XTS, they are not free of limitations. Their security bounds are quadratic, that is, limited by the birthday bound in the amount of data processed under one key~\cite{crowley_adiantum_2018, crowley_length-preserving_2021}. Beyond-birthday variants are the subject of current research~\cite{ozturk_hctr_2026, chen_beyond-birthday-bound_2026}.
+
+\section{ddd-AES}
+\label{sec:dddAes}
+
+The ddd-AES cipher (docked double decker with AES) is a tweakable wide-block cipher based on the docked double decker construction of Gunsing, Daemen and Mennink~\cite{gunsing_deck-based_2020}. Like Adiantum and HCTR2, it treats a whole sector as one block. Docked double decker is a Feistel-like structure with keyed hash functions in the outer rounds and doubly-extendable keyed (deck) functions in the middle rounds. In the docked variant, the bulk of the input is handled by the keyed hash functions, so the deck functions only process a much smaller part~\cite{gunsing_deck-based_2020}. The instantiation by Dobraunig et al.~\cite{fehr_efficient_2025} builds both parts from the same primitives as AES-GCM, namely AES and finite-field multiplication. Because of this, it can use the AES-NI and carry-less multiplication instructions, and the design allows a high degree of parallelism.
+
+The ddd-AES family includes three instances: ddd-AES, ddd-AES+ with variable-length tweaks, and bbb-ddd-AES (``bbb'' stands for beyond birthday bound), which achieves security beyond the birthday bound provided that the same tweak is not used too often~\cite{fehr_efficient_2025}. This condition can hold for solid-state drives, where each sector can only be written a limited number of times~\cite{gunsing_deck-based_2020}.
+
+Compared with XTS, ddd-AES removes the narrow-block weakness described in Section~\ref{sec:xts}, because a modification of one ciphertext bit changes the whole sector instead of one 16-byte block. Compared with Adiantum and HCTR2, it relies on the same AES hardware support as HCTR2, additionally supports variable-length tweaks (ddd-AES+), and its bbb-ddd-AES variant provides security beyond the birthday bound. Beyond-birthday HCTR2 variants exist as well~\cite{ozturk_hctr_2026, chen_beyond-birthday-bound_2026}, but they are recent preprints. The main drawbacks of ddd-AES are that bbb-ddd-AES requires an additional AES call per block~\cite{fehr_efficient_2025}, and that, as a recent design, it has had less public analysis than XTS.
+
+\chapter{Integration into the Linux kernel}
+\label{chap:integration}
+
+In Linux, disk encryption is not performed by the mode itself, but by kernel subsystems that request the algorithm from the kernel's cryptographic interfaces. For a new mode to be usable by these subsystems and by the tools built on top of them, it has to be made available through one of these interfaces. The kernel offers two of them: the traditional Crypto API and the newer crypto library. 
+
+\section{Disk encryption in the kernel}
+
+The two main users of disk encryption modes in the kernel are \texttt{dm-crypt} and \texttt{fscrypt}. The \texttt{dm-crypt} target provides transparent encryption of block devices using the kernel Crypto API~\cite{noauthor_dm-crypt_nodate}. The algorithm is selected by a cipher specification string, for example \texttt{aes-xts-plain64}, or directly by a Crypto API name with the \texttt{capi:} prefix, for example \texttt{capi:xts(aes)-plain64}~\cite{noauthor_dm-crypt_nodate}. The cipher is therefore chosen by a string when the device is set up, and a new mode has to be registered in the Crypto API under a name that can be found this way. In contrast, \texttt{fscrypt} operates at the filesystem level rather than at the block device level~\cite{noauthor_filesystem-level_nodate}. It encrypts files and directories, and allows an encryption mode to be specified for file contents and for filenames~\cite{noauthor_filesystem-level_nodate}. Wide-block modes, namely Adiantum and HCTR2, are already available to it~\cite{noauthor_filesystem-level_nodate, crowley_adiantum_2018, crowley_length-preserving_2021}.
+
+The ddd-AES mode belongs to the family of wide-block modes mentioned above. From the kernel's point of view, it is a symmetric key cipher with a key, a tweak passed as the initialization vector, and a data buffer. This is the interface that \texttt{dm-crypt} and \texttt{fscrypt} use, and therefore also the one that an implementation of ddd-AES has to provide. Since the initialization vector has a fixed size for a given algorithm, the \texttt{ddd-AES / bbb-ddd-AES} variant with a fixed-length tweak fit this interface directly.
+
+\section{Crypto API}
+
+The Linux Crypto API is the traditional interface for using cryptographic algorithms inside the kernel. It provides access to ciphers (called transformations in the documentation), hash functions, random number generators and other primitives~\cite{noauthor_crypto_nodate-1}. Instead of calling an implementation directly, kernel code requests a transformation by its name from a registry of available algorithms~\cite{noauthor_kernel_nodate}. Transformations such as \texttt{struct crypto\_alg} are added to and removed from the registry by calling functions \texttt{crypto\_register\_alg()} and \texttt{crypto\_unregister\_alg()} respectively~\cite{noauthor_developing_nodate}. Each transformation type has its own structures for registration and its own functions for use, for example \texttt{struct ahash\_alg} for hash functions~\cite{noauthor_kernel_nodate}. The registered structure contains the algorithm name, its parameters and a priority, which allows multiple driver implementations of the same algorithm to coexist.
+
+To use the Crypto API in the kernel, the caller looks up and allocates a transformation handle by its name. For symmetric ciphers, which include the disk encryption modes, this is the \texttt{skcipher} API~\cite{noauthor_symmetric_nodate}. The caller then sets the input parameters, such as the key, the initialization vector and the scatterlists describing the data buffers, and calls the encrypt or decrypt function~\cite{noauthor_symmetric_nodate}. Depending on the implementation and the flags set, the request is completed either synchronously or asynchronously via a callback.
+
+The Crypto API is also exposed to userspace through the \texttt{AF\_ALG} socket interface~\cite{noauthor_user_nodate}. The main advantage of the API is its flexibility at runtime. The algorithm is selected by its string name, without any knowledge at compile time, which allows \texttt{dm-crypt}, and through it \texttt{cryptsetup}, to use newer algorithms without internal changes. The best available implementation is chosen according to the priority set in the algorithm structure. The API also supports asynchronous requests, so cryptographic accelerators can be used.
+
+This flexibility is, however, tied to the disadvantages of the API. Calls through function pointers cannot be inlined and add overhead. There is also a substantial overhead in the transformation lookup and initialization, especially for small or one-off operations~\cite{noauthor_crypto_nodate}. Finally, the use of the API is complex and verbose: the caller has to allocate the handle and the request, build the scatterlists, set the parameters and callbacks, and free everything afterwards.
+
+\section{Crypto library}
+
+The kernel's crypto library, located in \texttt{lib/crypto}, is a newer alternative to the traditional Crypto API. Its main benefit is faster and easier access to cryptographic algorithms. The library functions call the algorithms directly, without indirect calls, memory allocation or lookups in the algorithm registry. They are linked statically at build time instead of being loaded dynamically by the algorithm name~\cite{noauthor_crypto_nodate}.
+
+The code is organized as follows~\cite{noauthor_crypto_nodate}:
+\begin{itemize}
+  \item \texttt{lib/crypto/*.c} -- algorithm implementations,
+  \item \texttt{lib/crypto/\$(SRCARCH)/} -- architecture-specific optimizations,
+  \item \texttt{lib/crypto/tests/} -- KUnit tests,
+  \item \texttt{include/crypto/} -- header files.
+\end{itemize}
+
+The testing of the library functions is also standardized: the library uses standard KUnit tests~\cite{noauthor_kunit_nodate}, located in \texttt{lib/crypto/tests}, instead of custom ad-hoc tests~\cite{noauthor_crypto_nodate}.
+
+According to the official documentation, the kernel developers recommend using the library, rather than the traditional Crypto API, whenever possible, both for implementing new algorithms and for using existing ones in kernel code~\cite{noauthor_crypto_nodate}. There are two main reasons for this. One of the most important is performance, as discussed in the previous section. Another is the simplicity of the resulting code.
+
+An exception is code that has to select the algorithm at runtime by its string name. This is the case for \texttt{dm-crypt}, which is configured by tools such as \texttt{cryptsetup} with a cipher specification string. Such code has to keep using the traditional Crypto API~\cite{noauthor_crypto_nodate}; otherwise, it would have to include a call to the library function for each supported algorithm. The two interfaces can also be combined: the algorithm is implemented in the library, and a thin wrapper registers it in the Crypto API for the cases that need lookup by name~\cite{noauthor_crypto_nodate}.
+
+\section{Approach for ddd-AES}
+
+Disk encryption is the use case where the traditional Crypto API cannot be avoided, because \texttt{dm-crypt} selects the algorithm by a string and the mode has to be found in the registry under its name. At the same time, the library offers the better performance and simpler code recommended by the kernel developers. The implementation of ddd-AES in this thesis therefore follows the combined approach that is also described in the official documentation~\cite{noauthor_crypto_nodate}. The mode itself is implemented in the crypto library, and a short wrapper registers it in the Crypto API as a symmetric key cipher. This way it can be requested by name by \texttt{dm-crypt} and by the tools built on top of it, while the library functions remain available for direct use by other in-kernel code. 
+
+Making the mode available to \texttt{fscrypt} would additionally require adding it to \texttt{fscrypt} itself, which supports a fixed set of modes~\cite{noauthor_filesystem-level_nodate}. This way it can be requested by name by \texttt{dm-crypt}, \texttt{fscrypt} and the tools built on top of them, while the library functions remain available for direct use by other in-kernel code.
 
 \chapter{Using lightweight markup}
 \shorthandoff{-}
@@ -586,8 +678,8 @@ the \verb"\"\texttt{thesis\discretionary{-}{}{}setup\{bib\discretionary{=}{=}{=}
 start citing the entries. This is just dummy text
 \parencite{borgman03} lightly sprinkled with citations
 \parencite[p.~123]{greenberg98}. Several sources can be cited at
-once: \cite{borgman03,greenberg98,thanh01}.
-\citetitle{greenberg98} was written by \citeauthor{greenberg98} in
+once:~\cite{borgman03,greenberg98,thanh01}.
+\citetitle{greenberg98} was written by~\citeauthor{greenberg98} in
 \citeyear{greenberg98}. We can also produce \textcite{greenberg98}%
 \ or %% Let us define a compound command:
 \def\citeauthoryear#1{(\textcite{#1},~\citeyear{#1})}%
